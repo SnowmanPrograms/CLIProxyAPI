@@ -294,10 +294,13 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 
 	// Register management routes when configuration or environment secrets are available,
-	// or when a local management password is provided (e.g. TUI mode).
+	// or when a local management password is provided (e.g. TUI mode),
+	// or when remote management is disabled (allow-remote: false) which means local-only access without password.
 	hasManagementSecret := cfg.RemoteManagement.SecretKey != "" || envManagementSecret || s.localPassword != ""
-	s.managementRoutesEnabled.Store(hasManagementSecret)
-	if hasManagementSecret {
+	// 如果不允许远程访问（仅本机访问），即使没有密码也启用管理路由
+	shouldEnableManagement := hasManagementSecret || !cfg.RemoteManagement.AllowRemote
+	s.managementRoutesEnabled.Store(shouldEnableManagement)
+	if shouldEnableManagement {
 		s.registerManagementRoutes()
 	}
 
@@ -932,6 +935,8 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		prevSecretEmpty = oldCfg.RemoteManagement.SecretKey == ""
 	}
 	newSecretEmpty := cfg.RemoteManagement.SecretKey == ""
+	// 如果不允许远程访问（仅本机访问），即使没有密码也启用管理路由
+	shouldEnableManagement := !newSecretEmpty || !cfg.RemoteManagement.AllowRemote
 	if s.envManagementSecret {
 		s.registerManagementRoutes()
 		if s.managementRoutesEnabled.CompareAndSwap(false, true) {
@@ -949,13 +954,23 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 				s.managementRoutesEnabled.Store(true)
 			}
 		case !prevSecretEmpty && newSecretEmpty:
-			if s.managementRoutesEnabled.CompareAndSwap(true, false) {
-				log.Info("management routes disabled after secret key removal")
+			// 如果不允许远程访问，即使密码被移除也保持启用
+			if !cfg.RemoteManagement.AllowRemote {
+				s.registerManagementRoutes()
+				if s.managementRoutesEnabled.CompareAndSwap(false, true) {
+					log.Info("management routes kept enabled for local-only access after secret key removal")
+				} else {
+					s.managementRoutesEnabled.Store(true)
+				}
 			} else {
-				s.managementRoutesEnabled.Store(false)
+				if s.managementRoutesEnabled.CompareAndSwap(true, false) {
+					log.Info("management routes disabled after secret key removal")
+				} else {
+					s.managementRoutesEnabled.Store(false)
+				}
 			}
 		default:
-			s.managementRoutesEnabled.Store(!newSecretEmpty)
+			s.managementRoutesEnabled.Store(shouldEnableManagement)
 		}
 	}
 

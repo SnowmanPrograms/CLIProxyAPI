@@ -203,6 +203,11 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 			}
 		}
 		if secretHash == "" && envSecret == "" {
+			// 如果是本机访问且不允许远程访问，则跳过密码验证
+			if localClient && !allowRemote {
+				c.Next()
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "remote management key not set"})
 			return
 		}
